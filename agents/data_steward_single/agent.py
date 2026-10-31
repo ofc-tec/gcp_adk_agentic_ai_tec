@@ -1,29 +1,85 @@
 """
 Single-Agent Data Steward — Google ADK
 
-Architecture:
-    One ADK Agent
-        |
-        +-- ask_data_agent (BigQuery Conversational Analytics)
-        |
-        +-- retrieve_governance_documents (Vertex AI RAG Engine)
+Three tool sources:
+1. BigQuery Conversational Analytics Data Agent
+2. Vertex AI Governance RAG
+3. Google-managed BigQuery MCP server
 
-Run from repository root:
+Run:
+    cd ~/data_steward
     uv run adk web agents
 """
 
+import google.auth
+from google.auth.transport.requests import Request
+
 from google.adk.agents import Agent
 
-# Reuse existing tools and BigQuery Data Agent resource.
-from data_agent.agent import (
+from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import (
+    StreamableHTTPConnectionParams,
+)
+
+from .data_agent.agent import (
     root_agent as data_agent,
     DATA_AGENT,
 )
 
-from governance_rag.agent import (
+from .governance_rag.agent import (
     root_agent as governance_agent,
 )
 
+
+# --------------------------------------------------
+# Google Cloud configuration
+# --------------------------------------------------
+
+PROJECT_ID = "ia-2006"
+
+BIGQUERY_MCP_URL = "https://bigquery.googleapis.com/mcp"
+
+
+# --------------------------------------------------
+# Google Cloud authentication
+# --------------------------------------------------
+
+credentials, _ = google.auth.default(
+    scopes=["https://www.googleapis.com/auth/cloud-platform"]
+)
+
+
+def get_mcp_headers(context=None):
+    """
+    Generate authentication headers for Google MCP.
+
+    Refresh the access token when necessary.
+    """
+    if not credentials.valid:
+        credentials.refresh(Request())
+
+    return {
+        "Authorization": f"Bearer {credentials.token}"
+    }
+
+
+# --------------------------------------------------
+# BigQuery MCP Toolset
+# --------------------------------------------------
+
+bigquery_mcp = McpToolset(
+    connection_params=StreamableHTTPConnectionParams(
+        url=BIGQUERY_MCP_URL,
+        timeout=30,
+        sse_read_timeout=300,
+    ),
+    header_provider=get_mcp_headers,
+)
+
+
+# --------------------------------------------------
+# Single ADK Agent
+# --------------------------------------------------
 
 root_agent = Agent(
     name="data_steward_single",
@@ -31,71 +87,108 @@ root_agent = Agent(
     model="gemini-3.5-flash",
 
     description=(
-        "Single-agent Data Steward with direct access to "
-        "BigQuery analytics and governance retrieval tools."
+        "Single Data Steward agent combining BigQuery "
+        "Conversational Analytics, Governance RAG, "
+        "and Google BigQuery MCP tools."
     ),
 
     instruction=f"""
-You are a Data Steward responsible for data analysis
-and organizational data governance.
+You are an enterprise Data Steward.
 
-You have access to two tools:
+You have access to three tool sources.
 
-1. ask_data_agent
-   Queries an existing BigQuery Conversational Analytics
-   Data Agent.
+--------------------------------------------------
+1. BIGQUERY CONVERSATIONAL ANALYTICS
+--------------------------------------------------
 
-2. retrieve_governance_documents
-   Retrieves organizational governance policies from
-   Vertex AI RAG Engine.
+Tool: ask_data_agent
 
-
-BIGQUERY DATA AGENT RESOURCE:
+Existing Data Agent resource:
 
 {DATA_AGENT}
 
+Use this tool to answer analytical questions about:
+- Airlines
+- Flight delays
+- Cancellations
+- Statistical summaries
+- Data quality
 
-RESPONSIBILITIES:
+Always provide the exact Data Agent resource when
+calling ask_data_agent.
 
-1. DATA ANALYSIS
-   For questions about airlines, flight performance,
-   delays, cancellations, statistics, or data quality:
-
-   - Call ask_data_agent.
-   - Use the exact Data Agent resource specified above.
-   - Base your answer on the returned results.
-   - Never invent numerical results.
-
-2. DATA GOVERNANCE
-   For questions about data ownership, metadata,
-   retention, privacy, or organizational policies:
-
-   - Call retrieve_governance_documents.
-   - Base answers on retrieved documents.
-   - Cite source documents when available.
-   - Never invent governance requirements.
-
-3. COMBINED QUESTIONS
-   For questions requiring both analytics and governance:
-
-   - Call both tools.
-   - Combine the analytical findings with relevant policies.
-   - Distinguish verified facts from recommendations.
-   - Clearly explain when information is insufficient.
+Never invent numerical results.
 
 
-RULES:
+--------------------------------------------------
+2. GOVERNANCE RAG
+--------------------------------------------------
 
-- Do not call either tool more than once per user question.
-- Do not automatically retry failed tool calls.
-- Do not use governance documents to answer numerical questions.
-- Never claim to have queried data unless the tool succeeded.
-- If a tool fails, explain the limitation.
-- Keep responses clear and concise.
+Tool: retrieve_governance_documents
+
+Use this tool for:
+- Data ownership
+- Data classification
+- Retention policies
+- Privacy
+- Organizational governance requirements
+
+Base governance claims on retrieved documents.
+
+Do not invent policies.
+
+
+--------------------------------------------------
+3. BIGQUERY MCP
+--------------------------------------------------
+
+You also have access to tools from Google's
+managed BigQuery MCP server.
+
+Use these tools for:
+- Discovering datasets
+- Listing tables
+- Inspecting table schemas
+- Exploring metadata
+- Executing read-only SQL when appropriate
+
+The Google Cloud project is:
+
+{PROJECT_ID}
+
+Never modify or delete data.
+
+Do not assume that datasets or tables exist
+without checking.
+
+
+--------------------------------------------------
+TOOL SELECTION
+--------------------------------------------------
+
+For analytical questions:
+Prefer ask_data_agent.
+
+For dataset discovery and metadata exploration:
+Prefer BigQuery MCP tools.
+
+For governance questions:
+Use retrieve_governance_documents.
+
+For questions requiring multiple capabilities:
+Use the relevant tools and combine their findings.
+
+Never invent tool results.
+
+If a tool fails, report the limitation.
+Do not automatically retry failed calls.
+
+Keep answers clear and concise.
 """,
 
     tools=[
         *data_agent.tools,
         *governance_agent.tools,
+        bigquery_mcp,
     ],
 )

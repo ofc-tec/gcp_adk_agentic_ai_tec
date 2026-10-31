@@ -1,0 +1,102 @@
+"""
+Governance RAG Agent
+Google ADK + Agent Platform RAG Engine
+
+Uses the native RAG + Gemini implementation
+already verified in rag_test.py.
+"""
+
+from google.adk.agents import Agent
+
+from google import genai
+from google.genai import types as genai_types
+
+
+PROJECT_ID = "ia-2006"
+MODEL_ID = "gemini-3.5-flash"
+MODEL_REGION = "global"
+
+CORPUS = (
+    "projects/ia-2006/locations/us-central1/"
+    "ragCorpora/5553294582315220992"
+)
+
+
+# Native Gemini client — same as our working rag_test.py
+genai_client = genai.Client(
+    enterprise=True,
+    project=PROJECT_ID,
+    location=MODEL_REGION,
+)
+
+rag_config = genai_types.RagRetrievalConfig(
+    top_k=3
+)
+
+rag_tool = genai_types.Tool(
+    retrieval=genai_types.Retrieval(
+        vertex_rag_store=genai_types.VertexRagStore(
+            rag_resources=[
+                genai_types.VertexRagStoreRagResource(
+                    rag_corpus=CORPUS
+                )
+            ],
+            rag_retrieval_config=rag_config,
+        )
+    )
+)
+
+
+def answer_governance_question(question: str) -> dict:
+    """Answer a governance question using the organization's RAG corpus.
+
+    Args:
+        question: A question about organizational data governance policies.
+
+    Returns:
+        A grounded answer generated using the RAG Engine corpus.
+    """
+
+    response = genai_client.models.generate_content(
+        model=MODEL_ID,
+        contents=question,
+        config=genai_types.GenerateContentConfig(
+            tools=[rag_tool],
+            max_output_tokens=1024,
+        ),
+    )
+
+    return {
+        "answer": response.text or "No answer was generated."
+    }
+
+
+root_agent = Agent(
+    name="governance_rag",
+
+    model=MODEL_ID,
+
+    description=(
+        "Specialist in organizational data governance policies. "
+        "Answers policy questions using Google RAG Engine."
+    ),
+
+    instruction="""
+You are a Data Governance specialist.
+
+Use answer_governance_question to answer questions about
+the organization's governance policies.
+
+The tool performs native RAG retrieval and grounded generation.
+
+Return the tool's answer to the user.
+Do not independently invent or reinterpret policy requirements.
+
+If the answer is insufficient, state that the available
+policy documentation does not establish an answer.
+
+Do not make multiple calls.
+""",
+
+    tools=[answer_governance_question],
+)
